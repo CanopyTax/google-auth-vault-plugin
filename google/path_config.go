@@ -15,7 +15,7 @@ const (
 	configPath                     = "config"
 	clientIDConfigPropertyName     = "client_id"
 	clientSecretConfigPropertyName = "client_secret"
-	fetchGroupsPropertyname		   = "fetch_groups"
+	fetchGroupsConfigPropertyName  = "fetch_groups"
 	configEntry                    = "config"
 )
 
@@ -23,7 +23,7 @@ func (b *backend) pathConfigWrite(ctx context.Context, req *logical.Request, dat
 	var (
 		clientID     = data.Get(clientIDConfigPropertyName).(string)
 		clientSecret = data.Get(clientSecretConfigPropertyName).(string)
-		fetchGroups  = data.Get(fetchGroupsPropertyname).(bool)
+		fetchGroups  = data.Get(fetchGroupsConfigPropertyName).(bool)
 	)
 
 	entry, err := logical.StorageEntryJSON(configEntry, config{
@@ -50,7 +50,7 @@ func (b *backend) pathConfigRead(ctx context.Context, req *logical.Request, data
 	configMap := map[string]interface{}{
 		clientIDConfigPropertyName:     config.ClientID,
 		clientSecretConfigPropertyName: config.ClientSecret,
-		fetchGroupsPropertyname:		config.FetchGroups,
+		fetchGroupsConfigPropertyName:	config.FetchGroups,
 	}
 
 	return &logical.Response{

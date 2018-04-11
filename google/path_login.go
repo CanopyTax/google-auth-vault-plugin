@@ -142,6 +142,7 @@ func (b *backend) authenticate(config *config, token *oauth2.Token) (*goauth.Use
 
 	groups := []string{}
 	if config.FetchGroups {
+		fmt.Printf("fetching groups for %v:\n", user.Email)
 		groupsService, err := admin.New(client)
 		if err != nil {
 			return nil, nil, err
@@ -155,6 +156,7 @@ func (b *backend) authenticate(config *config, token *oauth2.Token) (*goauth.Use
 		}
 
 		for _, group := range response.Groups {
+			fmt.Printf("%v is in group %v. Group has email: %v\n", user.Email, group.Name, group.Email)
 			groups = append(groups, group.Email)
 		}
 	}
@@ -166,6 +168,9 @@ func (b *backend) authorise(storage logical.Storage, role *role, user *goauth.Us
 	if user.Hd != role.BoundDomain && role.BoundDomain != "" {
 		return nil, fmt.Errorf("user %s is not part of required domain %s, found %s", user.Email, role.BoundDomain, user.Hd)
 	}
+	fmt.Println("comparing groups...")
+	fmt.Printf("groups: %v\n", groups)
+	fmt.Printf("bound_groups: %v\n", role.BoundGroups)
 
 	// Is this user in one of the bound groups for this role?
 	isGroupMember := strSliceHasIntersection(groups, role.BoundGroups)
