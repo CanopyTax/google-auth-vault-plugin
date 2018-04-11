@@ -43,13 +43,17 @@ func newBackend() *backend {
 			{
 				Pattern: configPath,
 				Fields: map[string]*framework.FieldSchema{
-					clientIDConfigPropertyName: &framework.FieldSchema{
+					clientIDConfigPropertyName: {
 						Type:        framework.TypeString,
 						Description: "Google application ID",
 					},
-					clientSecretConfigPropertyName: &framework.FieldSchema{
+					clientSecretConfigPropertyName: {
 						Type:        framework.TypeString,
 						Description: "Google application secret",
+					},
+					fetchGroupsPropertyname: {
+						Type:		framework.TypeBool,
+						Description: "Fetch groups for binding Google group to Vault policy",
 					},
 				},
 

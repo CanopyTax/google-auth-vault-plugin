@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/grapeshot/google-auth-vault-plugin/google"
+	"github.com/canopytax/google-auth-vault-plugin/google"
 	"github.com/hashicorp/vault/helper/pluginutil"
 	"github.com/hashicorp/vault/logical/plugin"
 )
