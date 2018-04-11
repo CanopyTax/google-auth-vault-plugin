@@ -51,7 +51,7 @@ func newBackend() *backend {
 						Type:        framework.TypeString,
 						Description: "Google application secret",
 					},
-					fetchGroupsPropertyname: {
+					fetchGroupsConfigPropertyName: {
 						Type:		framework.TypeBool,
 						Description: "Fetch groups for binding Google group to Vault policy",
 					},
