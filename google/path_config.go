@@ -19,6 +19,31 @@ const (
 	configEntry                    = "config"
 )
 
+func pathConfig(b *backend) *framework.Path {
+	return &framework.Path{
+		Pattern: configPath,
+		Fields: map[string]*framework.FieldSchema{
+			clientIDConfigPropertyName: {
+				Type:        framework.TypeString,
+				Description: "Google application ID",
+			},
+			clientSecretConfigPropertyName: {
+				Type:        framework.TypeString,
+				Description: "Google application secret",
+			},
+			fetchGroupsConfigPropertyName: {
+				Type:		framework.TypeBool,
+				Description: "Fetch groups for binding Google group to Vault policy",
+			},
+		},
+
+		Callbacks: map[logical.Operation]framework.OperationFunc{
+			logical.UpdateOperation: b.pathConfigWrite,
+			logical.ReadOperation:   b.pathConfigRead,
+		},
+	}
+}
+
 func (b *backend) pathConfigWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	var (
 		clientID     = data.Get(clientIDConfigPropertyName).(string)
@@ -26,7 +51,7 @@ func (b *backend) pathConfigWrite(ctx context.Context, req *logical.Request, dat
 		fetchGroups  = data.Get(fetchGroupsConfigPropertyName).(bool)
 	)
 
-	entry, err := logical.StorageEntryJSON(configEntry, config{
+	entry, err := logical.StorageEntryJSON(configEntry, Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		FetchGroups:  fetchGroups,
@@ -39,7 +64,7 @@ func (b *backend) pathConfigWrite(ctx context.Context, req *logical.Request, dat
 }
 
 func (b *backend) pathConfigRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	config, err := b.config(ctx, req.Storage)
+	config, err := b.Config(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +84,7 @@ func (b *backend) pathConfigRead(ctx context.Context, req *logical.Request, data
 }
 
 // Config returns the configuration for this backend.
-func (b *backend) config(ctx context.Context, s logical.Storage) (*config, error) {
+func (b *backend) Config(ctx context.Context, s logical.Storage) (*Config, error) {
 	entry, err := s.Get(ctx, configEntry)
 	if err != nil {
 		return nil, err
@@ -68,7 +93,7 @@ func (b *backend) config(ctx context.Context, s logical.Storage) (*config, error
 		return nil, nil
 	}
 
-	var result config
+	var result Config
 	if err := entry.DecodeJSON(&result); err != nil {
 		return nil, fmt.Errorf("error reading configuration: %s", err)
 	}
@@ -76,13 +101,13 @@ func (b *backend) config(ctx context.Context, s logical.Storage) (*config, error
 	return &result, nil
 }
 
-type config struct {
+type Config struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 	FetchGroups  bool   `json:"fetch_groups"`
 }
 
-func (c *config) oauth2Config() *oauth2.Config {
+func (c *Config) oauth2Config() *oauth2.Config {
 	config := &oauth2.Config{
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,

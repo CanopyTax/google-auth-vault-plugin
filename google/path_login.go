@@ -6,9 +6,6 @@ import (
 	"fmt"
 
 	"golang.org/x/oauth2"
-	"google.golang.org/api/admin/directory/v1"
-	goauth "google.golang.org/api/oauth2/v2"
-
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
@@ -16,26 +13,49 @@ import (
 const (
 	loginPath                   = "login"
 	googleAuthCodeParameterName = "code"
-	roleParameterName           = "role"
 )
+
+func pathLogin(b *backend) *framework.Path{
+	return &framework.Path{
+		Pattern: loginPath,
+		Fields: map[string]*framework.FieldSchema{
+			googleAuthCodeParameterName: &framework.FieldSchema{
+				Type:        framework.TypeString,
+				Description: "Google authentication code. Required.",
+			},
+		},
+
+		Callbacks: map[logical.Operation]framework.OperationFunc{
+			logical.UpdateOperation:         b.pathLogin,
+			logical.AliasLookaheadOperation: b.pathLoginAliasLookahead,
+		},
+	}
+}
+
+func (b *backend) pathLoginAliasLookahead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	username := d.Get("username").(string)
+	if username == "" {
+		b.Logger().Info("missing username in alias lookahead")
+		return nil, fmt.Errorf("missing username")
+	}
+
+	return &logical.Response{
+		Auth: &logical.Auth{
+			Alias: &logical.Alias{
+				Name: username,
+			},
+		},
+	}, nil
+}
 
 func (b *backend) pathLogin(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	code := data.Get(googleAuthCodeParameterName).(string)
-	roleName := data.Get(roleParameterName).(string)
-	role, err := b.role(ctx, req.Storage, roleName)
-	if err != nil {
-		return nil, err
-	}
-	if role == nil {
-		return logical.ErrorResponse(fmt.Sprintf("role '%s' not found", roleName)), nil
-	}
-
-	config, err := b.config(ctx, req.Storage)
+	config, err := b.Config(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
 	if config == nil {
-		return logical.ErrorResponse("missing config"), nil
+		return logical.ErrorResponse("missing Config"), nil
 	}
 
 	googleConfig := config.oauth2Config()
@@ -44,14 +64,9 @@ func (b *backend) pathLogin(ctx context.Context, req *logical.Request, data *fra
 		return nil, err
 	}
 
-	user, groups, err := b.authenticate(config, token)
+	policies, user, groups, err := b.Login(ctx, req, token)
 	if err != nil {
 		return nil, err
-	}
-
-	policies, err := b.authorise(req.Storage, role, user, groups)
-	if err != nil {
-		return logical.ErrorResponse(err.Error()), nil
 	}
 
 	encodedToken, err := encodeToken(token)
@@ -59,24 +74,37 @@ func (b *backend) pathLogin(ctx context.Context, req *logical.Request, data *fra
 		return nil, err
 	}
 
-	return &logical.Response{
-		Auth: &logical.Auth{
-			InternalData: map[string]interface{}{
-				"token": encodedToken,
-				"role":  roleName,
-			},
-			Policies: policies,
-			Metadata: map[string]string{
-				"username": user.Email,
-				"domain":   user.Hd,
-			},
-			DisplayName: user.Email,
-			LeaseOptions: logical.LeaseOptions{
-				TTL:       role.TTL,
-				Renewable: true,
-			},
+	resp := &logical.Response{}
+
+	resp.Auth = &logical.Auth{
+		InternalData: map[string]interface{}{
+			"token": encodedToken,
 		},
-	}, nil
+		Policies: policies,
+		Metadata: map[string]string{
+			"username": user.Email,
+			"domain":   user.Hd,
+		},
+		DisplayName: user.Email,
+		LeaseOptions: logical.LeaseOptions{
+			Renewable: true,
+		},
+		Alias: &logical.Alias{
+			Name: user.Email,
+		},
+	}
+
+	for _, group := range groups {
+		if group == "" {
+			continue
+		}
+		b.Logger().Info("auth/google: adding groupAlias:", group)
+		resp.Auth.GroupAliases = append(resp.Auth.GroupAliases, &logical.Alias{
+			Name: group,
+		})
+	}
+
+	return resp, nil
 }
 
 func (b *backend) authRenew(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
@@ -85,25 +113,12 @@ func (b *backend) authRenew(ctx context.Context, req *logical.Request, d *framew
 		return nil, errors.New("no refresh token from previous login")
 	}
 
-	roleName, ok := req.Auth.InternalData["role"].(string)
-	if !ok {
-		return nil, errors.New("no role name from previous login")
-	}
-
-	role, err := b.role(ctx, req.Storage, roleName)
-	if err != nil {
-		return nil, err
-	}
-	if role == nil {
-		return nil, fmt.Errorf("role '%s' not found", roleName)
-	}
-
-	config, err := b.config(ctx, req.Storage)
+	config, err := b.Config(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
 	if config == nil {
-		return logical.ErrorResponse("missing config"), nil
+		return logical.ErrorResponse("missing Config"), nil
 	}
 
 	token, err := decodeToken(encodedToken)
@@ -111,12 +126,8 @@ func (b *backend) authRenew(ctx context.Context, req *logical.Request, d *framew
 		return nil, err
 	}
 
-	user, groups, err := b.authenticate(config, token)
-	if err != nil {
-		return nil, err
-	}
-
-	policies, err := b.authorise(req.Storage, role, user, groups)
+	//user, groups, err := b.authenticate(config, token)
+	policies, _, groupNames, err := b.Login(ctx, req, token)
 	if err != nil {
 		return nil, err
 	}
@@ -125,60 +136,19 @@ func (b *backend) authRenew(ctx context.Context, req *logical.Request, d *framew
 		return logical.ErrorResponse(fmt.Sprintf("policies do not match. new policies: %s. old policies: %s.", policies, req.Auth.Policies)), nil
 	}
 
-	return framework.LeaseExtend(role.TTL, role.MaxTTL, b.System())(ctx, req, d)
-}
-
-func (b *backend) authenticate(config *config, token *oauth2.Token) (*goauth.Userinfoplus, []string, error) {
-	client := config.oauth2Config().Client(context.Background(), token)
-	userService, err := goauth.New(client)
+	var resp *logical.Response
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	user, err := goauth.NewUserinfoV2MeService(userService).Get().Do()
-	if err != nil {
-		return nil, nil, err
+	// Remove old aliases
+	resp.Auth.GroupAliases = nil
+
+	for _, groupName := range groupNames {
+		resp.Auth.GroupAliases = append(resp.Auth.GroupAliases, &logical.Alias{
+			Name: groupName,
+		})
 	}
 
-	groups := []string{}
-	if config.FetchGroups {
-		fmt.Printf("fetching groups for %v:\n", user.Email)
-		groupsService, err := admin.New(client)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		request := groupsService.Groups.List()
-		request.UserKey(user.Email)
-		response, err := request.Do()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		for _, group := range response.Groups {
-			fmt.Printf("%v is in group %v. Group has email: %v\n", user.Email, group.Name, group.Email)
-			groups = append(groups, group.Email)
-		}
-	}
-
-	return user, groups, nil
-}
-
-func (b *backend) authorise(storage logical.Storage, role *role, user *goauth.Userinfoplus, groups []string) ([]string, error) {
-	if user.Hd != role.BoundDomain && role.BoundDomain != "" {
-		return nil, fmt.Errorf("user %s is not part of required domain %s, found %s", user.Email, role.BoundDomain, user.Hd)
-	}
-	fmt.Println("comparing groups...")
-	fmt.Printf("groups: %v\n", groups)
-	fmt.Printf("bound_groups: %v\n", role.BoundGroups)
-
-	// Is this user in one of the bound groups for this role?
-	isGroupMember := strSliceHasIntersection(groups, role.BoundGroups)
-	isUserMember := strSliceHasIntersection([]string{user.Email}, role.BoundEmails)
-
-	if !isGroupMember && !isUserMember {
-		return nil, fmt.Errorf("user is not allowed to use this role")
-	}
-
-	return role.Policies, nil
+	return resp, nil
 }

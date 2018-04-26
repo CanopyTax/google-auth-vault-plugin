@@ -2,10 +2,14 @@ package google
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
+	"fmt"
+	"golang.org/x/oauth2"
+	goauth "google.golang.org/api/oauth2/v2"
+	"google.golang.org/api/admin/directory/v1"
+	"strings"
 )
 
 // Factory for Google backend.
@@ -25,7 +29,7 @@ Documentation can be found at https://github.com/grapeshot/google-auth-vault-plu
 
 // Backend for google
 func newBackend() *backend {
-	b := &backend{}
+	var b backend
 
 	b.Backend = &framework.Backend{
 		BackendType: logical.TypeCredential,
@@ -40,97 +44,91 @@ func newBackend() *backend {
 		},
 
 		Paths: append([]*framework.Path{
-			{
-				Pattern: configPath,
-				Fields: map[string]*framework.FieldSchema{
-					clientIDConfigPropertyName: {
-						Type:        framework.TypeString,
-						Description: "Google application ID",
-					},
-					clientSecretConfigPropertyName: {
-						Type:        framework.TypeString,
-						Description: "Google application secret",
-					},
-					fetchGroupsConfigPropertyName: {
-						Type:		framework.TypeBool,
-						Description: "Fetch groups for binding Google group to Vault policy",
-					},
-				},
-
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.UpdateOperation: b.pathConfigWrite,
-					logical.ReadOperation:   b.pathConfigRead,
-				},
-			},
-
-			{
-				Pattern: loginPath,
-				Fields: map[string]*framework.FieldSchema{
-					googleAuthCodeParameterName: &framework.FieldSchema{
-						Type:        framework.TypeString,
-						Description: "Google authentication code. Required.",
-					},
-					roleParameterName: {
-						Type:        framework.TypeString,
-						Description: "Name of the role against which the login is being attempted. Required.",
-					},
-				},
-
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.UpdateOperation:         b.pathLogin,
-					logical.AliasLookaheadOperation: b.pathLogin,
-				},
-			},
-
-			{
-				Pattern: codeURLPath,
-				Fields:  map[string]*framework.FieldSchema{},
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.ReadOperation: b.pathCodeURL,
-				},
-			},
-
-			// CRUD for roles.
-			{
-				Pattern:        fmt.Sprintf("role/%s", framework.GenericNameRegex("name")),
-				Fields:         roleFieldSchema,
-				ExistenceCheck: b.pathRoleExistenceCheck,
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.CreateOperation: b.pathRoleCreateUpdate,
-					logical.ReadOperation:   b.pathRoleRead,
-					logical.UpdateOperation: b.pathRoleCreateUpdate,
-					logical.DeleteOperation: b.pathRoleDelete,
-				},
-				HelpSynopsis:    pathRoleHelpSyn,
-				HelpDescription: pathRoleHelpDesc,
-			},
-
-			// Paths for listing roles
-			{
-				Pattern: "role/?",
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.ListOperation: b.pathRoleList,
-				},
-
-				HelpSynopsis:    pathListRolesHelpSyn,
-				HelpDescription: pathListRolesHelpDesc,
-			},
-			{
-				Pattern: "roles/?",
-				Callbacks: map[logical.Operation]framework.OperationFunc{
-					logical.ListOperation: b.pathRoleList,
-				},
-
-				HelpSynopsis:    pathListRolesHelpSyn,
-				HelpDescription: pathListRolesHelpDesc,
-			},
+			pathConfig(&b),
+			pathLogin(&b),
+			pathCodeURL(&b),
+			pathGroups(&b),
+			pathGroupsList(&b),
+			pathUsers(&b),
+			pathUsersList(&b),
 		}),
 	}
 
-	return b
+	return &b
+}
+
+func (b *backend) Login(ctx context.Context, req *logical.Request, token *oauth2.Token) ([]string, *goauth.Userinfoplus, []string, error) {
+	cfg, err := b.Config(ctx, req.Storage)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if cfg == nil {
+		return nil, nil, nil, fmt.Errorf("google backend not configured")
+	}
+
+	client := cfg.oauth2Config().Client(context.Background(), token)
+	userService, err := goauth.New(client)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	user, err := goauth.NewUserinfoV2MeService(userService).Get().Do()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	var groups []string
+	// Import the custom added groups from google backend
+	userEntry, err := b.User(ctx, req.Storage, user.Email)
+	if err == nil && userEntry != nil && userEntry.Groups != nil {
+		b.Logger().Info("auth/google: adding local groups", "num_local_groups", len(userEntry.Groups), "local_groups", userEntry.Groups)
+		if b.Logger().IsDebug() {
+			b.Logger().Debug("auth/google: adding local groups", "num_local_groups", len(userEntry.Groups), "local_groups", userEntry.Groups)
+		}
+		groups = append(groups, userEntry.Groups...)
+	}
+
+	if cfg.FetchGroups {
+		b.Logger().Info("fetching groups for", user.Email)
+		groupsService, err := admin.New(client)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		request := groupsService.Groups.List()
+		request.UserKey(user.Email)
+		response, err := request.Do()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		for _, group := range response.Groups {
+			b.Logger().Info("auth/google: adding GSuite group", group.Name)
+			groups = append(groups, friendlyName(group.Email))
+		}
+	}
+
+	// Retrieve policies
+	var policies []string
+	for _, groupName := range groups {
+		group, err := b.Group(ctx, req.Storage, groupName)
+		b.Logger().Info("auth/google: retrieving policies for ", groupName)
+		if err == nil && group != nil {
+			b.Logger().Info("auth/google: attaching policies:", group.Policies)
+			policies = append(policies, group.Policies...)
+		}
+	}
+	b.Logger().Info("done logging in")
+	b.Logger().Info(fmt.Sprintf("groups: %v", groups))
+	b.Logger().Info(fmt.Sprintf("policies: %v", policies))
+
+	return policies, user, groups, nil
+}
+
+func friendlyName(s string) string {
+	return strings.Split(s, "@")[0]
 }
 
 type backend struct {
-	Map *framework.PolicyMap
 	*framework.Backend
 }
