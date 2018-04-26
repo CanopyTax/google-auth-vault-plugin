@@ -33,9 +33,9 @@ func pathLogin(b *backend) *framework.Path{
 }
 
 func (b *backend) pathLoginAliasLookahead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	b.Logger().Info("alias lookahead")
 	username := d.Get("username").(string)
 	if username == "" {
-		b.Logger().Info("missing username in alias lookahead")
 		return nil, fmt.Errorf("missing username")
 	}
 
@@ -98,7 +98,6 @@ func (b *backend) pathLogin(ctx context.Context, req *logical.Request, data *fra
 		if group == "" {
 			continue
 		}
-		b.Logger().Info("auth/google: adding groupAlias:", group)
 		resp.Auth.GroupAliases = append(resp.Auth.GroupAliases, &logical.Alias{
 			Name: group,
 		})

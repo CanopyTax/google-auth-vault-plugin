@@ -81,7 +81,6 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, token *oauth2
 	// Import the custom added groups from google backend
 	userEntry, err := b.User(ctx, req.Storage, user.Email)
 	if err == nil && userEntry != nil && userEntry.Groups != nil {
-		b.Logger().Info("auth/google: adding local groups", "num_local_groups", len(userEntry.Groups), "local_groups", userEntry.Groups)
 		if b.Logger().IsDebug() {
 			b.Logger().Debug("auth/google: adding local groups", "num_local_groups", len(userEntry.Groups), "local_groups", userEntry.Groups)
 		}
@@ -89,7 +88,6 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, token *oauth2
 	}
 
 	if cfg.FetchGroups {
-		b.Logger().Info("fetching groups for", user.Email)
 		groupsService, err := admin.New(client)
 		if err != nil {
 			return nil, nil, nil, err
@@ -103,7 +101,6 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, token *oauth2
 		}
 
 		for _, group := range response.Groups {
-			b.Logger().Info("auth/google: adding GSuite group", group.Name)
 			groups = append(groups, friendlyName(group.Email))
 		}
 	}
@@ -112,15 +109,10 @@ func (b *backend) Login(ctx context.Context, req *logical.Request, token *oauth2
 	var policies []string
 	for _, groupName := range groups {
 		group, err := b.Group(ctx, req.Storage, groupName)
-		b.Logger().Info("auth/google: retrieving policies for ", groupName)
 		if err == nil && group != nil {
-			b.Logger().Info("auth/google: attaching policies:", group.Policies)
 			policies = append(policies, group.Policies...)
 		}
 	}
-	b.Logger().Info("done logging in")
-	b.Logger().Info(fmt.Sprintf("groups: %v", groups))
-	b.Logger().Info(fmt.Sprintf("policies: %v", policies))
 
 	return policies, user, groups, nil
 }
